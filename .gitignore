@@ -1,0 +1,6 @@
+# Binaries
+bin/
+
+# Go build cache
+*.test
+*.out

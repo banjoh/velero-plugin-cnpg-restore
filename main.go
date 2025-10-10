@@ -1,15 +1,15 @@
 package main
 
 import (
+	"github.com/nvanthao/velero-plugin-cnpg-restore/internal/plugin"
 	"github.com/sirupsen/logrus"
-	"github.com/vmware-tanzu/velero-plugin-example/internal/plugin"
 	"github.com/vmware-tanzu/velero/pkg/plugin/framework"
 )
 
 func main() {
 	framework.NewServer().
-		RegisterRestoreItemActionV2("example.io/restore-pluginv2", newRestorePluginV2).
-		RegisterBackupItemActionV2("example.io/backup-pluginv2", newBackupPluginV2).
+		RegisterRestoreItemActionV2("replicated.com/cnpg-restore-plugin", newRestorePluginV2).
+		RegisterBackupItemActionV2("replicated.com/cnpg-backup-plugin", newBackupPluginV2).
 		Serve()
 }
 

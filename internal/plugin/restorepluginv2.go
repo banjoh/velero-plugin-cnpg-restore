@@ -29,12 +29,19 @@ func (p *RestorePluginV2) Name() string {
 // A RestoreItemAction's Execute function will only be invoked on items that match the returned
 // selector. A zero-valued ResourceSelector matches all resources.
 func (p *RestorePluginV2) AppliesTo() (velero.ResourceSelector, error) {
-	return velero.ResourceSelector{}, nil
+	p.log.Info("RestorePluginV2.AppliesTo called")
+	return velero.ResourceSelector{
+		IncludedResources: []string{"clusters.postgresql.cnpg.io"},
+	}, nil
 }
 
 // Execute allows the RestorePlugin to perform arbitrary logic with the item being restored,
 // in this case, setting a custom annotation on the item being restored.
 func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (*velero.RestoreItemActionExecuteOutput, error) {
+	p.log.Info("RestorePluginV2.Execute - TODO: implement restore logic")
+
+	// TODO: update bootstrap section of Cluster CR with bootstrap.recovery for recovery
+	// if not CNPG will just create a brand new cluster
 	out := velero.NewRestoreItemActionExecuteOutput(input.Item)
 	return out, nil
 }

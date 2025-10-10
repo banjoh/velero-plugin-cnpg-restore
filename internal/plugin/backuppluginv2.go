@@ -35,7 +35,10 @@ func (p *BackupPluginV2) Name() string {
 // A BackupPlugin's Execute function will only be invoked on items that match the returned
 // selector. A zero-valued ResourceSelector matches all resources.
 func (p *BackupPluginV2) AppliesTo() (velero.ResourceSelector, error) {
-	return velero.ResourceSelector{}, nil
+	p.log.Info("BackupPluginV2.AppliesTo called")
+	return velero.ResourceSelector{
+		IncludedResources: []string{"clusters.postgresql.cnpg.io"},
+	}, nil
 }
 
 func GetClient() (*kubernetes.Clientset, error) {
@@ -57,6 +60,10 @@ func GetClient() (*kubernetes.Clientset, error) {
 
 // Execute allows the ItemAction to perform arbitrary logic with the item being backed up
 func (p *BackupPluginV2) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, string, []velero.ResourceIdentifier, error) {
+	p.log.Info("BackupPluginV2.Execute - TODO: implement backup logic")
+	// TODO: annotate the Cluster CR with the serverName in .spec.plugins.parameters.serverName
+	// https://cloudnative-pg.io/documentation/1.27/cloudnative-pg.v1/#postgresql-cnpg-io-v1-ClusterSpec
+	// this is so that the restored cluster can get current serverName and derive a new serverName to avoid WAL conflicts
 	return item, nil, "", nil, nil
 }
 

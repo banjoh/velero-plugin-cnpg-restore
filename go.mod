@@ -1,4 +1,4 @@
-module github.com/vmware-tanzu/velero-plugin-example
+module github.com/nvanthao/velero-plugin-cnpg-restore
 
 go 1.23.0
 
