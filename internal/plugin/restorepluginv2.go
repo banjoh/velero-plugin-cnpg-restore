@@ -158,7 +158,7 @@ func (p *RestorePluginV2) configureBootstrapRecovery(itemContent map[string]inte
 // Execute allows the RestorePlugin to perform arbitrary logic with the item being restored,
 // in this case, configuring the cluster for recovery from backup.
 func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (*velero.RestoreItemActionExecuteOutput, error) {
-	p.log.Info("Executing CNPG restore plugin")
+	p.log.Info("Executing CNPG restore plugin on resource: %s", resourceName(input.Item))
 
 	itemContent := input.Item.UnstructuredContent()
 

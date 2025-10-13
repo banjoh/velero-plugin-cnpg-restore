@@ -168,7 +168,7 @@ func (p *BackupPluginV2) addAnnotation(itemContent map[string]interface{}, key, 
 
 // Execute allows the ItemAction to perform arbitrary logic with the item being backed up
 func (p *BackupPluginV2) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, string, []velero.ResourceIdentifier, error) {
-	p.log.Info("Executing CNPG backup plugin")
+	p.log.Info("Executing CNPG backup plugin on resource: %s", resourceName(item))
 
 	itemContent := item.UnstructuredContent()
 
@@ -211,4 +211,21 @@ func (p *BackupPluginV2) Progress(operationID string, backup *v1.Backup) (velero
 
 func (p *BackupPluginV2) Cancel(operationID string, backup *v1.Backup) error {
 	return nil
+}
+
+func resourceName(item runtime.Unstructured) string {
+	metadata, found, err := unstructured.NestedFieldNoCopy(item.UnstructuredContent(), "metadata")
+	if err != nil {
+		return ""
+	}
+	if !found {
+		return ""
+	}
+
+	metadataMap, ok := metadata.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+
+	return metadataMap["name"].(string)
 }
