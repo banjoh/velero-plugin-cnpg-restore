@@ -1,6 +1,9 @@
 package plugin
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
@@ -75,6 +78,12 @@ func (p *RestorePluginV2) getAnnotation(itemContent map[string]interface{}, key 
 	return valueStr, true, nil
 }
 
+// generateNewServerName creates a unique serverName using the cluster name and timestamp
+func (p *RestorePluginV2) generateNewServerName(clusterName string) string {
+	timestamp := time.Now().Format("20060102-150405")
+	return fmt.Sprintf("%s-%s", clusterName, timestamp)
+}
+
 // removeEphemeralFields removes status and other ephemeral fields from the cluster CR
 func (p *RestorePluginV2) removeEphemeralFields(itemContent map[string]interface{}) {
 	// Remove status field
@@ -123,6 +132,65 @@ func (p *RestorePluginV2) configureExternalCluster(itemContent map[string]interf
 
 	// Directly modify the spec map instead of using SetNestedField
 	specMap["externalClusters"] = externalClusters
+
+	return nil
+}
+
+// updatePluginServerName updates the serverName in spec.plugins[].parameters to a new unique value
+func (p *RestorePluginV2) updatePluginServerName(itemContent map[string]interface{}, newServerName string) error {
+	spec, found, err := unstructured.NestedFieldNoCopy(itemContent, "spec")
+	if err != nil {
+		return errors.Wrap(err, "failed to get spec field")
+	}
+	if !found {
+		return errors.New("spec field not found")
+	}
+
+	specMap, ok := spec.(map[string]interface{})
+	if !ok {
+		return errors.New("spec is not a map")
+	}
+
+	plugins, found := specMap["plugins"]
+	if !found {
+		p.log.Info("No plugins found in spec, skipping serverName update")
+		return nil
+	}
+
+	pluginsList, ok := plugins.([]interface{})
+	if !ok {
+		return errors.New("plugins is not a list")
+	}
+
+	// Update serverName in all plugins that have it
+	updated := false
+	for _, plugin := range pluginsList {
+		pluginMap, ok := plugin.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		parameters, found := pluginMap["parameters"]
+		if !found {
+			continue
+		}
+
+		paramsMap, ok := parameters.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Update serverName if it exists
+		if _, found := paramsMap["serverName"]; found {
+			paramsMap["serverName"] = newServerName
+			updated = true
+			p.log.Infof("Updated plugin serverName to: %s", newServerName)
+		}
+	}
+
+	if !updated {
+		p.log.Warn("No serverName found in any plugin parameters")
+	}
 
 	return nil
 }
@@ -188,7 +256,38 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 
 	p.log.Infof("Found barmanObjectName annotation: %s", barmanObjectName)
 
+	// Get cluster name from metadata
+	metadata, found, err := unstructured.NestedFieldNoCopy(itemContent, "metadata")
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get metadata for cluster name")
+	}
+	if !found {
+		return nil, errors.New("metadata not found")
+	}
+	metadataMap, ok := metadata.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("metadata is not a map")
+	}
+	clusterName, found := metadataMap["name"]
+	if !found {
+		return nil, errors.New("cluster name not found in metadata")
+	}
+	clusterNameStr, ok := clusterName.(string)
+	if !ok {
+		return nil, errors.New("cluster name is not a string")
+	}
+
+	// Generate new serverName for the restored cluster
+	newServerName := p.generateNewServerName(clusterNameStr)
+	p.log.Infof("Generated new serverName for restored cluster: %s (original: %s)", newServerName, serverName)
+
 	p.removeEphemeralFields(itemContent)
+
+	// Update the plugin serverName to the new unique value
+	if err := p.updatePluginServerName(itemContent, newServerName); err != nil {
+		return nil, errors.Wrap(err, "failed to update plugin serverName")
+	}
+	p.log.Infof("Updated spec.plugins[].parameters.serverName to: %s", newServerName)
 
 	// Configure external cluster for backup source
 	if err := p.configureExternalCluster(itemContent, serverName, barmanObjectName); err != nil {
