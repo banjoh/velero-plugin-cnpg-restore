@@ -3,16 +3,16 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
+	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -45,7 +45,7 @@ func GetClient() (*kubernetes.Clientset, error) {
 }
 
 // createOrUpdateConfigMap creates or updates the cnpg-velero-override ConfigMap
-func (p *RestorePluginV2) createOrUpdateConfigMap(namespace, clusterName, writeServerName, readServerName string) error {
+func (p *RestorePluginV2) createOrUpdateConfigMap(namespace, writeServerName, readServerName string) error {
 	client, err := GetClient()
 	if err != nil {
 		return errors.Wrap(err, "failed to get Kubernetes client")
@@ -53,49 +53,42 @@ func (p *RestorePluginV2) createOrUpdateConfigMap(namespace, clusterName, writeS
 
 	configMapName := "cnpg-velero-override"
 
-	// Create ConfigMap data
-	configMapData := map[string]string{
-		"write_to_server_name":  writeServerName,
-		"read_from_server_name": readServerName,
-	}
+	// Create context with timeout for K8s API operations
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	// Try to create the ConfigMap
-	_, err = client.CoreV1().ConfigMaps(namespace).Create(context.TODO(), &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: namespace,
-			Annotations: map[string]string{
-				"helm.sh/resource-policy": "keep",
+	// create or update the ConfigMap
+	_, err = client.CoreV1().ConfigMaps(namespace).Apply(ctx,
+		&corev1apply.ConfigMapApplyConfiguration{
+			TypeMetaApplyConfiguration: metav1apply.TypeMetaApplyConfiguration{
+				Kind:       stringPtr("ConfigMap"),
+				APIVersion: stringPtr("v1"),
+			},
+			ObjectMetaApplyConfiguration: &metav1apply.ObjectMetaApplyConfiguration{
+				Name:      &configMapName,
+				Namespace: &namespace,
+				Annotations: map[string]string{
+					"helm.sh/resource-policy": "keep",
+				},
+			},
+			Data: map[string]string{
+				"write_to_server_name":  writeServerName,
+				"read_from_server_name": readServerName,
 			},
 		},
-		Data: configMapData,
-	}, metav1.CreateOptions{})
+		metav1.ApplyOptions{FieldManager: "velero-cnpg-plugin", Force: true})
 
 	if err != nil {
-		// If ConfigMap already exists, update it
-		if strings.Contains(err.Error(), "already exists") {
-			_, err = client.CoreV1().ConfigMaps(namespace).Update(context.TODO(), &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      configMapName,
-					Namespace: namespace,
-					Annotations: map[string]string{
-						"helm.sh/resource-policy": "keep",
-					},
-				},
-				Data: configMapData,
-			}, metav1.UpdateOptions{})
-			if err != nil {
-				return errors.Wrap(err, "failed to update ConfigMap")
-			}
-			p.log.Infof("Updated ConfigMap %s/%s", namespace, configMapName)
-		} else {
-			return errors.Wrap(err, "failed to create ConfigMap")
-		}
-	} else {
-		p.log.Infof("Created ConfigMap %s/%s", namespace, configMapName)
+		return errors.Wrap(err, "failed to apply ConfigMap")
 	}
 
+	p.log.Infof("Applied ConfigMap %s/%s", namespace, configMapName)
 	return nil
+}
+
+// stringPtr is a helper to get string pointer
+func stringPtr(s string) *string {
+	return &s
 }
 
 // extractBarmanObjectName extracts barmanObjectName from .spec.plugins[].parameters
@@ -407,7 +400,7 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 
 	// Create or update ConfigMap with serverName information
 	namespace := metadataMap["namespace"].(string)
-	if err := p.createOrUpdateConfigMap(namespace, clusterNameStr, newServerName, serverName); err != nil {
+	if err := p.createOrUpdateConfigMap(namespace, newServerName, serverName); err != nil {
 		return nil, errors.Wrap(err, "failed to create/update ConfigMap")
 	}
 
