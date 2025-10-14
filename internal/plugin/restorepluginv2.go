@@ -1,14 +1,20 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 // RestorePlugin is a restore item action plugin for Velero
@@ -19,6 +25,128 @@ type RestorePluginV2 struct {
 // NewRestorePluginV2 instantiates a v2 RestorePlugin.
 func NewRestorePluginV2(log logrus.FieldLogger) *RestorePluginV2 {
 	return &RestorePluginV2{log: log}
+}
+
+func GetClient() (*kubernetes.Clientset, error) {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	configOverrides := &clientcmd.ConfigOverrides{}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	clientConfig, err := kubeConfig.ClientConfig()
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	client, err := kubernetes.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	return client, nil
+}
+
+// createOrUpdateConfigMap creates or updates the cnpg-velero-override ConfigMap
+func (p *RestorePluginV2) createOrUpdateConfigMap(namespace, clusterName, writeServerName, readServerName string) error {
+	client, err := GetClient()
+	if err != nil {
+		return errors.Wrap(err, "failed to get Kubernetes client")
+	}
+
+	configMapName := "cnpg-velero-override"
+
+	// Create ConfigMap data
+	configMapData := map[string]string{
+		"write_to_server_name":  writeServerName,
+		"read_from_server_name": readServerName,
+	}
+
+	// Try to create the ConfigMap
+	_, err = client.CoreV1().ConfigMaps(namespace).Create(context.TODO(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				"helm.sh/resource-policy": "keep",
+			},
+		},
+		Data: configMapData,
+	}, metav1.CreateOptions{})
+
+	if err != nil {
+		// If ConfigMap already exists, update it
+		if strings.Contains(err.Error(), "already exists") {
+			_, err = client.CoreV1().ConfigMaps(namespace).Update(context.TODO(), &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configMapName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						"helm.sh/resource-policy": "keep",
+					},
+				},
+				Data: configMapData,
+			}, metav1.UpdateOptions{})
+			if err != nil {
+				return errors.Wrap(err, "failed to update ConfigMap")
+			}
+			p.log.Infof("Updated ConfigMap %s/%s", namespace, configMapName)
+		} else {
+			return errors.Wrap(err, "failed to create ConfigMap")
+		}
+	} else {
+		p.log.Infof("Created ConfigMap %s/%s", namespace, configMapName)
+	}
+
+	return nil
+}
+
+// extractBarmanObjectName extracts barmanObjectName from .spec.plugins[].parameters
+func (p *RestorePluginV2) extractBarmanObjectName(itemContent map[string]interface{}) (string, error) {
+	spec, found, err := unstructured.NestedFieldNoCopy(itemContent, "spec")
+	if err != nil {
+		return "", errors.Wrap(err, "failed to get spec field")
+	}
+	if !found {
+		return "", errors.New("spec field not found")
+	}
+
+	specMap, ok := spec.(map[string]interface{})
+	if !ok {
+		return "", errors.New("spec is not a map")
+	}
+
+	plugins, found := specMap["plugins"]
+	if !found {
+		return "", errors.New("no plugins found in spec")
+	}
+
+	pluginsList, ok := plugins.([]interface{})
+	if !ok {
+		return "", errors.New("plugins is not a list")
+	}
+
+	for _, plugin := range pluginsList {
+		pluginMap, ok := plugin.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		parameters, found := pluginMap["parameters"]
+		if !found {
+			continue
+		}
+
+		paramsMap, ok := parameters.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if bon, found := paramsMap["barmanObjectName"]; found {
+			if bonStr, ok := bon.(string); ok {
+				return bonStr, nil
+			}
+		}
+	}
+
+	return "", errors.New("barmanObjectName not found in plugin parameters")
 }
 
 // Name is required to implement the interface, but the Velero pod does not delegate this
@@ -244,17 +372,13 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 
 	p.log.Infof("Found serverName annotation: %s", serverName)
 
-	// Get barmanObjectName from annotation
-	barmanObjectName, hasBarmanObjectName, err := p.getAnnotation(itemContent, AnnotationBarmanObjectName)
+	// Extract barmanObjectName from .spec.plugins[].parameters
+	barmanObjectName, err := p.extractBarmanObjectName(itemContent)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to get barmanObjectName annotation")
+		return nil, errors.Wrap(err, "failed to extract barmanObjectName from plugin parameters")
 	}
 
-	if !hasBarmanObjectName {
-		return nil, errors.Errorf("%s annotation not found but serverName exists", AnnotationBarmanObjectName)
-	}
-
-	p.log.Infof("Found barmanObjectName annotation: %s", barmanObjectName)
+	p.log.Infof("Found barmanObjectName in plugin parameters: %s", barmanObjectName)
 
 	// Get cluster name from metadata
 	metadata, found, err := unstructured.NestedFieldNoCopy(itemContent, "metadata")
@@ -280,6 +404,12 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 	// Generate new serverName for the restored cluster
 	newServerName := p.generateNewServerName(clusterNameStr)
 	p.log.Infof("Generated new serverName for restored cluster: %s (original: %s)", newServerName, serverName)
+
+	// Create or update ConfigMap with serverName information
+	namespace := metadataMap["namespace"].(string)
+	if err := p.createOrUpdateConfigMap(namespace, clusterNameStr, newServerName, serverName); err != nil {
+		return nil, errors.Wrap(err, "failed to create/update ConfigMap")
+	}
 
 	p.removeEphemeralFields(itemContent)
 

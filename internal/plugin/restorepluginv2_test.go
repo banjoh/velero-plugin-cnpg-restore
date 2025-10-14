@@ -6,8 +6,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func TestGetAnnotation(t *testing.T) {
@@ -30,11 +30,11 @@ func TestGetAnnotation(t *testing.T) {
 					"name":      "test-cluster",
 					"namespace": "default",
 					"annotations": map[string]interface{}{
-						"cnpg.io/serverName": "test-server-123",
+						"velero-cnpg/serverName": "test-server-123",
 					},
 				},
 			},
-			key:           "cnpg.io/serverName",
+			key:           "velero-cnpg/serverName",
 			expectedValue: "test-server-123",
 			expectedFound: true,
 			expectedError: false,
@@ -50,7 +50,7 @@ func TestGetAnnotation(t *testing.T) {
 					},
 				},
 			},
-			key:           "cnpg.io/serverName",
+			key:           "velero-cnpg/serverName",
 			expectedValue: "",
 			expectedFound: false,
 			expectedError: false,
@@ -63,7 +63,7 @@ func TestGetAnnotation(t *testing.T) {
 					"namespace": "default",
 				},
 			},
-			key:           "cnpg.io/serverName",
+			key:           "velero-cnpg/serverName",
 			expectedValue: "",
 			expectedFound: false,
 			expectedError: false,
@@ -73,7 +73,7 @@ func TestGetAnnotation(t *testing.T) {
 			itemContent: map[string]interface{}{
 				"spec": map[string]interface{}{},
 			},
-			key:           "cnpg.io/serverName",
+			key:           "velero-cnpg/serverName",
 			expectedValue: "",
 			expectedFound: false,
 			expectedError: false,
@@ -162,11 +162,11 @@ func TestConfigureExternalCluster(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		itemContent       map[string]interface{}
-		serverName        string
-		barmanObjectName  string
-		expectedError     bool
+		name             string
+		itemContent      map[string]interface{}
+		serverName       string
+		barmanObjectName string
+		expectedError    bool
 	}{
 		{
 			name: "successful configuration",
@@ -180,11 +180,11 @@ func TestConfigureExternalCluster(t *testing.T) {
 			expectedError:    false,
 		},
 		{
-			name:              "no spec field",
-			itemContent:       map[string]interface{}{},
-			serverName:        "test-server",
-			barmanObjectName:  "backup-store",
-			expectedError:     true,
+			name:             "no spec field",
+			itemContent:      map[string]interface{}{},
+			serverName:       "test-server",
+			barmanObjectName: "backup-store",
+			expectedError:    true,
 		},
 	}
 
@@ -508,8 +508,7 @@ func TestRestoreExecute(t *testing.T) {
 					"generation":        2,
 					"creationTimestamp": "2025-10-13T02:58:32Z",
 					"annotations": map[string]interface{}{
-						"cnpg.io/serverName":       "cnpg-202510131354",
-						"cnpg.io/barmanObjectName": "chef-360-cnpg-backup-store",
+						"velero-cnpg/serverName": "cnpg-202510131354",
 					},
 				},
 				"spec": map[string]interface{}{
@@ -596,8 +595,7 @@ func TestRestoreExecute(t *testing.T) {
 					"generation":        2,
 					"creationTimestamp": "2025-10-13T02:58:32Z",
 					"annotations": map[string]interface{}{
-						"cnpg.io/serverName":       "cnpg-202510131354",
-						"cnpg.io/barmanObjectName": "chef-360-cnpg-backup-store",
+						"velero-cnpg/serverName": "cnpg-202510131354",
 					},
 				},
 				"spec": map[string]interface{}{
@@ -666,7 +664,7 @@ func TestRestoreExecute(t *testing.T) {
 			},
 		},
 		{
-			name: "serverName annotation without barmanObjectName - error",
+			name: "serverName annotation without barmanObjectName in plugin parameters - error",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
 				"kind":       "Cluster",
@@ -674,7 +672,7 @@ func TestRestoreExecute(t *testing.T) {
 					"name":      "test-cluster",
 					"namespace": "default",
 					"annotations": map[string]interface{}{
-						"cnpg.io/serverName": "test-server",
+						"velero-cnpg/serverName": "test-server",
 					},
 				},
 				"spec": map[string]interface{}{

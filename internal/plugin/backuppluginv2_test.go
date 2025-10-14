@@ -15,14 +15,13 @@ func TestExtractPluginParameters(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                  string
-		itemContent           map[string]interface{}
-		expectedServerName    string
-		expectedBarmanObject  string
-		expectedError         bool
+		name               string
+		itemContent        map[string]interface{}
+		expectedServerName string
+		expectedError      bool
 	}{
 		{
-			name: "valid serverName and barmanObjectName in plugins",
+			name: "valid serverName in plugins",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
 				"kind":       "Cluster",
@@ -33,9 +32,9 @@ func TestExtractPluginParameters(t *testing.T) {
 				"spec": map[string]interface{}{
 					"plugins": []interface{}{
 						map[string]interface{}{
-							"enabled":      true,
+							"enabled":       true,
 							"isWALArchiver": true,
-							"name":         "barman-cloud.cloudnative-pg.io",
+							"name":          "barman-cloud.cloudnative-pg.io",
 							"parameters": map[string]interface{}{
 								"barmanObjectName": "chef-360-cnpg-backup-store",
 								"serverName":       "cnpg-202510131354",
@@ -44,9 +43,8 @@ func TestExtractPluginParameters(t *testing.T) {
 					},
 				},
 			},
-			expectedServerName:   "cnpg-202510131354",
-			expectedBarmanObject: "chef-360-cnpg-backup-store",
-			expectedError:        false,
+			expectedServerName: "cnpg-202510131354",
+			expectedError:      false,
 		},
 		{
 			name: "no plugins in spec",
@@ -59,12 +57,11 @@ func TestExtractPluginParameters(t *testing.T) {
 				},
 				"spec": map[string]interface{}{},
 			},
-			expectedServerName:   "",
-			expectedBarmanObject: "",
-			expectedError:        false,
+			expectedServerName: "",
+			expectedError:      false,
 		},
 		{
-			name: "only barmanObjectName in parameters",
+			name: "no serverName in parameters",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
 				"kind":       "Cluster",
@@ -84,12 +81,11 @@ func TestExtractPluginParameters(t *testing.T) {
 					},
 				},
 			},
-			expectedServerName:   "",
-			expectedBarmanObject: "backup-store",
-			expectedError:        false,
+			expectedServerName: "",
+			expectedError:      false,
 		},
 		{
-			name: "multiple plugins, both parameters in second",
+			name: "multiple plugins, serverName in second",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
 				"kind":       "Cluster",
@@ -117,9 +113,8 @@ func TestExtractPluginParameters(t *testing.T) {
 					},
 				},
 			},
-			expectedServerName:   "test-server-123",
-			expectedBarmanObject: "test-backup-store",
-			expectedError:        false,
+			expectedServerName: "test-server-123",
+			expectedError:      false,
 		},
 		{
 			name: "no spec field",
@@ -131,9 +126,8 @@ func TestExtractPluginParameters(t *testing.T) {
 					"namespace": "default",
 				},
 			},
-			expectedServerName:   "",
-			expectedBarmanObject: "",
-			expectedError:        true,
+			expectedServerName: "",
+			expectedError:      true,
 		},
 		{
 			name: "spec is not a map",
@@ -146,22 +140,20 @@ func TestExtractPluginParameters(t *testing.T) {
 				},
 				"spec": "invalid-spec",
 			},
-			expectedServerName:   "",
-			expectedBarmanObject: "",
-			expectedError:        true,
+			expectedServerName: "",
+			expectedError:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			serverName, barmanObjectName, err := plugin.extractPluginParameters(tt.itemContent)
+			serverName, err := plugin.extractPluginParameters(tt.itemContent)
 
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedServerName, serverName)
-				assert.Equal(t, tt.expectedBarmanObject, barmanObjectName)
 			}
 		})
 	}
@@ -271,10 +263,9 @@ func TestBackupExecute(t *testing.T) {
 		itemContent                  map[string]interface{}
 		expectedError                bool
 		expectedServerNameAnnotation string
-		expectedBarmanAnnotation     string
 	}{
 		{
-			name: "successful execution with both parameters",
+			name: "successful execution with serverName parameter",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
 				"kind":       "Cluster",
@@ -290,9 +281,9 @@ func TestBackupExecute(t *testing.T) {
 					"instances": 1,
 					"plugins": []interface{}{
 						map[string]interface{}{
-							"enabled":      true,
+							"enabled":       true,
 							"isWALArchiver": true,
-							"name":         "barman-cloud.cloudnative-pg.io",
+							"name":          "barman-cloud.cloudnative-pg.io",
 							"parameters": map[string]interface{}{
 								"barmanObjectName": "chef-360-cnpg-backup-store",
 								"serverName":       "cnpg-202510131354",
@@ -303,7 +294,6 @@ func TestBackupExecute(t *testing.T) {
 			},
 			expectedError:                false,
 			expectedServerNameAnnotation: "cnpg-202510131354",
-			expectedBarmanAnnotation:     "chef-360-cnpg-backup-store",
 		},
 		{
 			name: "no parameters - should skip annotation",
@@ -320,7 +310,6 @@ func TestBackupExecute(t *testing.T) {
 			},
 			expectedError:                false,
 			expectedServerNameAnnotation: "",
-			expectedBarmanAnnotation:     "",
 		},
 	}
 
@@ -344,24 +333,15 @@ func TestBackupExecute(t *testing.T) {
 				resultContent := resultItem.UnstructuredContent()
 				metadata := resultContent["metadata"].(map[string]interface{})
 
-				if tt.expectedServerNameAnnotation != "" || tt.expectedBarmanAnnotation != "" {
+				if tt.expectedServerNameAnnotation != "" {
 					annotations := metadata["annotations"].(map[string]interface{})
-
-					if tt.expectedServerNameAnnotation != "" {
-						assert.Equal(t, tt.expectedServerNameAnnotation, annotations["cnpg.io/serverName"])
-					}
-
-					if tt.expectedBarmanAnnotation != "" {
-						assert.Equal(t, tt.expectedBarmanAnnotation, annotations["cnpg.io/barmanObjectName"])
-					}
+					assert.Equal(t, tt.expectedServerNameAnnotation, annotations["velero-cnpg/serverName"])
 				} else {
-					// If no annotation expected, check that they don't exist
+					// If no annotation expected, check that it doesn't exist
 					if annotations, exists := metadata["annotations"]; exists {
 						annotationsMap := annotations.(map[string]interface{})
-						_, hasServerName := annotationsMap["cnpg.io/serverName"]
-						_, hasBarmanObject := annotationsMap["cnpg.io/barmanObjectName"]
+						_, hasServerName := annotationsMap["velero-cnpg/serverName"]
 						assert.False(t, hasServerName)
-						assert.False(t, hasBarmanObject)
 					}
 				}
 			}
