@@ -9,6 +9,7 @@ import (
 func main() {
 	framework.NewServer().
 		RegisterRestoreItemActionV2("replicated.com/cnpg-restore-plugin", newRestorePluginV2).
+		RegisterRestoreItemActionV2("replicated.com/deployment-restore-plugin", newDeploymentRestorePlugin).
 		RegisterBackupItemActionV2("replicated.com/cnpg-backup-plugin", newBackupPluginV2).
 		Serve()
 }
@@ -19,4 +20,8 @@ func newBackupPluginV2(logger logrus.FieldLogger) (interface{}, error) {
 
 func newRestorePluginV2(logger logrus.FieldLogger) (interface{}, error) {
 	return plugin.NewRestorePluginV2(logger), nil
+}
+
+func newDeploymentRestorePlugin(logger logrus.FieldLogger) (interface{}, error) {
+	return plugin.NewDeploymentRestorePlugin(logger), nil
 }
