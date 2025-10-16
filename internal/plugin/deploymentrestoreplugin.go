@@ -48,9 +48,6 @@ func (p *DeploymentRestorePlugin) Execute(input *velero.RestoreItemActionExecute
 
 	itemContent := input.Item.UnstructuredContent()
 
-	// Get deployment name for logging
-	deploymentName := p.getDeploymentName(itemContent)
-
 	// Check if this deployment has init containers
 	initContainers, found, err := unstructured.NestedFieldNoCopy(itemContent, "spec", "template", "spec", "initContainers")
 	if err != nil {
@@ -100,7 +97,7 @@ func (p *DeploymentRestorePlugin) Execute(input *velero.RestoreItemActionExecute
 		}
 
 		if nameStr == MigrationInitContainerName {
-			p.log.Infof("Removing init container '%s' from deployment '%s'", nameStr, deploymentName)
+			p.log.Infof("Removing init container: %s", nameStr)
 			removedCount++
 		} else {
 			filteredContainers = append(filteredContainers, container)
@@ -108,7 +105,7 @@ func (p *DeploymentRestorePlugin) Execute(input *velero.RestoreItemActionExecute
 	}
 
 	if removedCount > 0 {
-		p.log.Infof("Removed %d '%s' init container(s) from deployment '%s'", removedCount, MigrationInitContainerName, deploymentName)
+		p.log.Infof("Removed %d '%s' init container(s)", removedCount, MigrationInitContainerName)
 
 		// Update the deployment with filtered init containers
 		if len(filteredContainers) == 0 {
@@ -127,9 +124,9 @@ func (p *DeploymentRestorePlugin) Execute(input *velero.RestoreItemActionExecute
 
 		// Update the item with modified content
 		input.Item.SetUnstructuredContent(itemContent)
-		p.log.Infof("Successfully removed migration init containers from deployment '%s'", deploymentName)
+		p.log.Info("Successfully removed migration init containers from deployment")
 	} else {
-		p.log.Infof("No '%s' init containers found in deployment '%s', deployment unchanged", MigrationInitContainerName, deploymentName)
+		p.log.Infof("No '%s' init containers found, deployment unchanged", MigrationInitContainerName)
 	}
 
 	out := velero.NewRestoreItemActionExecuteOutput(input.Item)
@@ -147,29 +144,4 @@ func (p *DeploymentRestorePlugin) Cancel(operationID string, restore *v1.Restore
 
 func (p *DeploymentRestorePlugin) AreAdditionalItemsReady(additionalItems []velero.ResourceIdentifier, restore *v1.Restore) (bool, error) {
 	return true, nil
-}
-
-// getDeploymentName extracts the deployment name from the item content for logging purposes
-func (p *DeploymentRestorePlugin) getDeploymentName(itemContent map[string]interface{}) string {
-	metadata, found, err := unstructured.NestedFieldNoCopy(itemContent, "metadata")
-	if err != nil || !found {
-		return "unknown"
-	}
-
-	metadataMap, ok := metadata.(map[string]interface{})
-	if !ok {
-		return "unknown"
-	}
-
-	name, found := metadataMap["name"]
-	if !found {
-		return "unknown"
-	}
-
-	nameStr, ok := name.(string)
-	if !ok {
-		return "unknown"
-	}
-
-	return nameStr
 }
