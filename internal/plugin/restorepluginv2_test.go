@@ -429,10 +429,11 @@ func TestConfigureBootstrapRecovery(t *testing.T) {
 	tests := []struct {
 		name          string
 		itemContent   map[string]interface{}
+		backupID      string
 		expectedError bool
 	}{
 		{
-			name: "successful configuration - replace initdb",
+			name: "successful configuration - replace initdb without backup ID",
 			itemContent: map[string]interface{}{
 				"spec": map[string]interface{}{
 					"instances": 1,
@@ -443,27 +444,55 @@ func TestConfigureBootstrapRecovery(t *testing.T) {
 					},
 				},
 			},
+			backupID:      "",
 			expectedError: false,
 		},
 		{
-			name: "successful configuration - no existing bootstrap",
+			name: "successful configuration - with backup ID",
+			itemContent: map[string]interface{}{
+				"spec": map[string]interface{}{
+					"instances": 1,
+					"bootstrap": map[string]interface{}{
+						"initdb": map[string]interface{}{
+							"database": "app",
+						},
+					},
+				},
+			},
+			backupID:      "20250114T120000",
+			expectedError: false,
+		},
+		{
+			name: "successful configuration - no existing bootstrap, with backup ID",
 			itemContent: map[string]interface{}{
 				"spec": map[string]interface{}{
 					"instances": 1,
 				},
 			},
+			backupID:      "20250114T150000",
+			expectedError: false,
+		},
+		{
+			name: "successful configuration - no existing bootstrap, no backup ID",
+			itemContent: map[string]interface{}{
+				"spec": map[string]interface{}{
+					"instances": 1,
+				},
+			},
+			backupID:      "",
 			expectedError: false,
 		},
 		{
 			name:          "no spec field",
 			itemContent:   map[string]interface{}{},
+			backupID:      "",
 			expectedError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := plugin.configureBootstrapRecovery(tt.itemContent)
+			err := plugin.configureBootstrapRecovery(tt.itemContent, tt.backupID)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -479,6 +508,19 @@ func TestConfigureBootstrapRecovery(t *testing.T) {
 
 				recovery := bootstrap["recovery"].(map[string]interface{})
 				assert.Equal(t, "clusterBackup", recovery["source"])
+
+				// Check recoveryTarget based on whether backupID was provided
+				if tt.backupID != "" {
+					recoveryTarget, hasRecoveryTarget := recovery["recoveryTarget"]
+					assert.True(t, hasRecoveryTarget, "recoveryTarget should be set when backupID is provided")
+					if hasRecoveryTarget {
+						recoveryTargetMap := recoveryTarget.(map[string]interface{})
+						assert.Equal(t, tt.backupID, recoveryTargetMap["backupID"])
+					}
+				} else {
+					_, hasRecoveryTarget := recovery["recoveryTarget"]
+					assert.False(t, hasRecoveryTarget, "recoveryTarget should not be set when backupID is empty")
+				}
 			}
 		})
 	}
@@ -583,6 +625,98 @@ func TestRestoreExecute(t *testing.T) {
 			},
 		},
 		{
+			name: "successful restore with backup ID annotation",
+			itemContent: map[string]interface{}{
+				"apiVersion": "postgresql.cnpg.io/v1",
+				"kind":       "Cluster",
+				"metadata": map[string]interface{}{
+					"name":              "chef-360-cnpg-postgres",
+					"namespace":         "chef-360",
+					"resourceVersion":   "50194",
+					"uid":               "4bbf7651-2056-4cf7-b5cb-ff7ce4b806cf",
+					"generation":        2,
+					"creationTimestamp": "2025-10-13T02:58:32Z",
+					"annotations": map[string]interface{}{
+						"velero-cnpg/serverName":       "cnpg-202510131354",
+						"velero-cnpg/current-backup-id": "20250114T120000",
+					},
+				},
+				"spec": map[string]interface{}{
+					"instances": 1,
+					"bootstrap": map[string]interface{}{
+						"initdb": map[string]interface{}{
+							"database": "app",
+						},
+					},
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name": "barman-cloud.cloudnative-pg.io",
+							"parameters": map[string]interface{}{
+								"serverName":       "cnpg-202510131354",
+								"barmanObjectName": "chef-360-cnpg-backup-store",
+							},
+						},
+					},
+				},
+				"status": map[string]interface{}{
+					"phase": "Running",
+				},
+			},
+			expectedError: false,
+			validateFn: func(t *testing.T, output *velero.RestoreItemActionExecuteOutput) {
+				itemContent := output.UpdatedItem.UnstructuredContent()
+
+				// Check status is removed
+				_, hasStatus := itemContent["status"]
+				assert.False(t, hasStatus)
+
+				// Check ephemeral metadata fields are removed
+				metadata := itemContent["metadata"].(map[string]interface{})
+				_, hasResourceVersion := metadata["resourceVersion"]
+				assert.False(t, hasResourceVersion)
+
+				spec := itemContent["spec"].(map[string]interface{})
+
+				// Check plugin serverName was updated to new unique value
+				plugins := spec["plugins"].([]interface{})
+				assert.Len(t, plugins, 1)
+				pluginConfig := plugins[0].(map[string]interface{})
+				params := pluginConfig["parameters"].(map[string]interface{})
+
+				// Verify new serverName follows format: clusterName-YYYYMMDD-HHMMSS
+				newServerName := params["serverName"].(string)
+				assert.NotEqual(t, "cnpg-202510131354", newServerName, "serverName should be updated")
+				assert.Regexp(t, `^chef-360-cnpg-postgres-\d{8}-\d{6}$`, newServerName)
+
+				// Verify barmanObjectName is preserved
+				assert.Equal(t, "chef-360-cnpg-backup-store", params["barmanObjectName"])
+
+				// Check externalClusters is configured with ORIGINAL serverName (for backup source)
+				externalClusters := spec["externalClusters"].([]interface{})
+				assert.Len(t, externalClusters, 1)
+
+				cluster := externalClusters[0].(map[string]interface{})
+				assert.Equal(t, "clusterBackup", cluster["name"])
+
+				extPlugin := cluster["plugin"].(map[string]interface{})
+				extParams := extPlugin["parameters"].(map[string]interface{})
+				assert.Equal(t, "cnpg-202510131354", extParams["serverName"], "externalClusters should use original serverName")
+				assert.Equal(t, "chef-360-cnpg-backup-store", extParams["barmanObjectName"])
+
+				// Check bootstrap is updated to recovery with backup ID
+				bootstrap := spec["bootstrap"].(map[string]interface{})
+				_, hasInitDB := bootstrap["initdb"]
+				assert.False(t, hasInitDB)
+
+				recovery := bootstrap["recovery"].(map[string]interface{})
+				assert.Equal(t, "clusterBackup", recovery["source"])
+
+				// Verify recoveryTarget.backupID is set
+				recoveryTarget := recovery["recoveryTarget"].(map[string]interface{})
+				assert.Equal(t, "20250114T120000", recoveryTarget["backupID"], "backupID should be set from annotation")
+			},
+		},
+		{
 			name: "successful restore with annotations",
 			itemContent: map[string]interface{}{
 				"apiVersion": "postgresql.cnpg.io/v1",
@@ -603,6 +737,15 @@ func TestRestoreExecute(t *testing.T) {
 					"bootstrap": map[string]interface{}{
 						"initdb": map[string]interface{}{
 							"database": "app",
+						},
+					},
+					"plugins": []interface{}{
+						map[string]interface{}{
+							"name": "barman-cloud.cloudnative-pg.io",
+							"parameters": map[string]interface{}{
+								"serverName":       "cnpg-202510131354",
+								"barmanObjectName": "chef-360-cnpg-backup-store",
+							},
 						},
 					},
 				},
@@ -631,13 +774,17 @@ func TestRestoreExecute(t *testing.T) {
 				cluster := externalClusters[0].(map[string]interface{})
 				assert.Equal(t, "clusterBackup", cluster["name"])
 
-				// Check bootstrap is updated to recovery
+				// Check bootstrap is updated to recovery without backup ID (backward compatibility)
 				bootstrap := spec["bootstrap"].(map[string]interface{})
 				_, hasInitDB := bootstrap["initdb"]
 				assert.False(t, hasInitDB)
 
 				recovery := bootstrap["recovery"].(map[string]interface{})
 				assert.Equal(t, "clusterBackup", recovery["source"])
+
+				// Verify NO recoveryTarget is set when backup ID annotation is absent
+				_, hasRecoveryTarget := recovery["recoveryTarget"]
+				assert.False(t, hasRecoveryTarget, "recoveryTarget should not be set when backup ID annotation is absent")
 			},
 		},
 		{

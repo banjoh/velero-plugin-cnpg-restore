@@ -317,7 +317,7 @@ func (p *RestorePluginV2) updatePluginServerName(itemContent map[string]interfac
 }
 
 // configureBootstrapRecovery updates bootstrap configuration to use recovery from backup
-func (p *RestorePluginV2) configureBootstrapRecovery(itemContent map[string]interface{}) error {
+func (p *RestorePluginV2) configureBootstrapRecovery(itemContent map[string]interface{}, backupID string) error {
 	spec, found, err := unstructured.NestedFieldNoCopy(itemContent, "spec")
 	if err != nil {
 		return errors.Wrap(err, "failed to get spec field")
@@ -331,11 +331,22 @@ func (p *RestorePluginV2) configureBootstrapRecovery(itemContent map[string]inte
 		return errors.New("spec is not a map")
 	}
 
+	// Create recovery configuration
+	recovery := map[string]interface{}{
+		"source": "clusterBackup",
+	}
+
+	// Add recoveryTarget if backupID is provided
+	if backupID != "" {
+		recovery["recoveryTarget"] = map[string]interface{}{
+			"backupID": backupID,
+		}
+		p.log.Infof("Configured recovery target with backupID: %s", backupID)
+	}
+
 	// Replace bootstrap configuration with recovery
 	bootstrap := map[string]interface{}{
-		"recovery": map[string]interface{}{
-			"source": "clusterBackup",
-		},
+		"recovery": recovery,
 	}
 
 	// Directly modify the spec map
@@ -364,6 +375,15 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 	}
 
 	p.log.Infof("Found serverName annotation: %s", serverName)
+
+	// Check for backup ID annotation (optional)
+	backupID, hasBackupID, err := p.getAnnotation(itemContent, "velero-cnpg/current-backup-id")
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get backup ID annotation")
+	}
+	if hasBackupID {
+		p.log.Infof("Found backup ID annotation: %s", backupID)
+	}
 
 	// Extract barmanObjectName from .spec.plugins[].parameters
 	barmanObjectName, err := p.extractBarmanObjectName(itemContent)
@@ -418,8 +438,8 @@ func (p *RestorePluginV2) Execute(input *velero.RestoreItemActionExecuteInput) (
 	}
 	p.log.Info("Configured externalClusters with backup source")
 
-	// Update bootstrap to use recovery
-	if err := p.configureBootstrapRecovery(itemContent); err != nil {
+	// Update bootstrap to use recovery with optional backup ID
+	if err := p.configureBootstrapRecovery(itemContent, backupID); err != nil {
 		return nil, errors.Wrap(err, "failed to configure bootstrap recovery")
 	}
 	p.log.Info("Configured bootstrap.recovery to restore from backup")
