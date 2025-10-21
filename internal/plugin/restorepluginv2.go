@@ -13,8 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	corev1apply "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1apply "k8s.io/client-go/applyconfigurations/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // RestorePlugin is a restore item action plugin for Velero
@@ -27,22 +25,6 @@ func NewRestorePluginV2(log logrus.FieldLogger) *RestorePluginV2 {
 	return &RestorePluginV2{log: log}
 }
 
-func GetClient() (*kubernetes.Clientset, error) {
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	configOverrides := &clientcmd.ConfigOverrides{}
-	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-	clientConfig, err := kubeConfig.ClientConfig()
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	client, err := kubernetes.NewForConfig(clientConfig)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	return client, nil
-}
 
 // createOrUpdateConfigMap creates or updates the cnpg-velero-override ConfigMap
 func (p *RestorePluginV2) createOrUpdateConfigMap(namespace, writeServerName, readServerName string) error {

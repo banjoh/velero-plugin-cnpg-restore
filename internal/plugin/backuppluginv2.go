@@ -1,10 +1,16 @@
 package plugin
 
 import (
+	"context"
+	"sort"
+	"time"
+
 	"github.com/sirupsen/logrus"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/pkg/errors"
 	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
@@ -15,6 +21,10 @@ const (
 	// AnnotationServerName is the annotation key used to store the CNPG server name
 	// for restore operations to reference the backup source
 	AnnotationServerName = "velero-cnpg/serverName"
+
+	// AnnotationCurrentBackupID is the annotation key used to store the backup ID
+	// from the latest completed CNPG backup for precise point-in-time recovery
+	AnnotationCurrentBackupID = "velero-cnpg/current-backup-id"
 )
 
 // BackupPluginV2 is a v2 backup item action plugin for Velero.
@@ -133,6 +143,121 @@ func (p *BackupPluginV2) addAnnotation(itemContent map[string]interface{}, key, 
 	return nil
 }
 
+// getLatestCompletedBackupID queries the Kubernetes API for the latest completed backup
+// for the specified cluster and returns its backupId from status
+func (p *BackupPluginV2) getLatestCompletedBackupID(ctx context.Context, namespace, clusterName string) (string, error) {
+	// Get dynamic client for querying CRDs
+	dynamicClient, err := GetDynamicClient()
+	if err != nil {
+		return "", errors.Wrap(err, "failed to create dynamic client")
+	}
+
+	// Define the GVR for CNPG Backup resources
+	gvr := schema.GroupVersionResource{
+		Group:    "postgresql.cnpg.io",
+		Version:  "v1",
+		Resource: "backups",
+	}
+
+	// List all backup resources in the namespace
+	backupList, err := dynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", errors.Wrap(err, "failed to list CNPG backup resources")
+	}
+
+	if len(backupList.Items) == 0 {
+		p.log.Warnf("No backup resources found in namespace %s", namespace)
+		return "", nil
+	}
+
+	// Filter and collect completed backups for this cluster
+	var completedBackups []unstructured.Unstructured
+	for _, backup := range backupList.Items {
+		// Check if backup belongs to this cluster
+		spec, found, err := unstructured.NestedFieldNoCopy(backup.Object, "spec")
+		if err != nil || !found {
+			continue
+		}
+		specMap, ok := spec.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Check cluster reference
+		cluster, found := specMap["cluster"]
+		if !found {
+			continue
+		}
+		clusterMap, ok := cluster.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		backupClusterName, found := clusterMap["name"]
+		if !found {
+			continue
+		}
+		if backupClusterName != clusterName {
+			continue
+		}
+
+		// Check if backup is completed
+		status, found, err := unstructured.NestedFieldNoCopy(backup.Object, "status")
+		if err != nil || !found {
+			continue
+		}
+		statusMap, ok := status.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		phase, found := statusMap["phase"]
+		if !found {
+			continue
+		}
+		phaseStr, ok := phase.(string)
+		if !ok || phaseStr != "completed" {
+			continue
+		}
+
+		completedBackups = append(completedBackups, backup)
+	}
+
+	if len(completedBackups) == 0 {
+		p.log.Warnf("No completed backups found for cluster %s in namespace %s", clusterName, namespace)
+		return "", nil
+	}
+
+	// Sort by creation timestamp (descending - newest first)
+	sort.Slice(completedBackups, func(i, j int) bool {
+		timeI := completedBackups[i].GetCreationTimestamp()
+		timeJ := completedBackups[j].GetCreationTimestamp()
+		return timeI.After(timeJ.Time)
+	})
+
+	// Extract backupId from the latest backup
+	latestBackup := completedBackups[0]
+	status, found, err := unstructured.NestedFieldNoCopy(latestBackup.Object, "status")
+	if err != nil || !found {
+		return "", errors.New("failed to get status from latest backup")
+	}
+	statusMap, ok := status.(map[string]interface{})
+	if !ok {
+		return "", errors.New("status is not a map in latest backup")
+	}
+
+	backupID, found := statusMap["backupId"]
+	if !found {
+		return "", errors.New("backupId not found in latest backup status")
+	}
+	backupIDStr, ok := backupID.(string)
+	if !ok {
+		return "", errors.New("backupId is not a string")
+	}
+
+	p.log.Infof("Found latest completed backup: %s with backupId: %s", latestBackup.GetName(), backupIDStr)
+	return backupIDStr, nil
+}
+
 // Execute allows the ItemAction to perform arbitrary logic with the item being backed up
 func (p *BackupPluginV2) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, string, []velero.ResourceIdentifier, error) {
 	p.log.Info("Executing CNPG backup plugin on resource: %s", resourceName(item))
@@ -154,6 +279,35 @@ func (p *BackupPluginV2) Execute(item runtime.Unstructured, backup *v1.Backup) (
 	p.log.Infof("Found serverName: %s", serverName)
 	if err := p.addAnnotation(itemContent, AnnotationServerName, serverName); err != nil {
 		return nil, nil, "", nil, err
+	}
+
+	// Get cluster metadata for backup query
+	metadata, found, err := unstructured.NestedFieldNoCopy(itemContent, "metadata")
+	if err == nil && found {
+		metadataMap, ok := metadata.(map[string]interface{})
+		if ok {
+			namespace, _ := metadataMap["namespace"].(string)
+			clusterName, _ := metadataMap["name"].(string)
+
+			if namespace != "" && clusterName != "" {
+				// Query for latest completed backup with timeout
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				backupID, err := p.getLatestCompletedBackupID(ctx, namespace, clusterName)
+				if err != nil {
+					p.log.Warnf("Failed to get latest backup ID: %v", err)
+				} else if backupID != "" {
+					if err := p.addAnnotation(itemContent, AnnotationCurrentBackupID, backupID); err != nil {
+						p.log.Warnf("Failed to annotate backup ID: %v", err)
+					} else {
+						p.log.Infof("Annotated cluster with backup ID: %s", backupID)
+					}
+				} else {
+					p.log.Warn("No completed backups found for cluster")
+				}
+			}
+		}
 	}
 
 	item.SetUnstructuredContent(itemContent)
