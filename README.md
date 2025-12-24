@@ -60,7 +60,13 @@ When restoring a CNPG cluster, the **Restore Plugin** (`replicated.com/cnpg-rest
        write_to_server_name: "my-cluster-20241024-150405"  # New identity
        read_from_server_name: "original-cluster-name"       # Backup source
      ```
-   - Annotated with `helm.sh/resource-policy: keep` to prevent deletion
+   - **Purpose**: Enables Helm chart templates to dynamically reference the correct server names during future updates
+   - **Helm Integration**: ConfigMap values can be referenced in chart templates to maintain consistency across upgrades:
+     ```yaml
+     # Example Helm template usage
+     serverName: {{ .Values.global.cnpgServerName | default (index (lookup "v1" "ConfigMap" .Release.Namespace "cnpg-velero-override").data "write_to_server_name") }}
+     ```
+   - Annotated with `helm.sh/resource-policy: keep` to prevent deletion during Helm operations
 
 4. **Configures External Cluster Reference**
    - Adds `.spec.externalClusters` configuration pointing to backup source:
